@@ -1,0 +1,47 @@
+name: Build plugins
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest, bundle: "bundle monosynth --release" }
+          - { name: linux, os: ubuntu-22.04, bundle: "bundle monosynth --release" }
+          - { name: macos-universal, os: macos-latest, bundle: "bundle-universal monosynth --release" }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl-dev libjack-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test engine
+        run: cargo test -p ts404-core --release
+
+      - name: Bundle VST3 + CLAP
+        run: cargo xtask ${{ matrix.bundle }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MonoSynth-${{ matrix.name }}
+          path: target/bundled/*
+          if-no-files-found: error

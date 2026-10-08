@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/ts404-core", "crates/monosynth", "xtask"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.test]
+opt-level = 3

@@ -1,0 +1,10 @@
+[package]
+name = "ts404-core"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Sound engine of MonoSynth, a TS404-style monophonic synth"
+
+[dependencies]
+libm = "0.2"
+

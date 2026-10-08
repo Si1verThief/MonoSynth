@@ -1,0 +1,24 @@
+[package]
+name = "monosynth"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Monophonic acid synth that sounds like FL Studio's classic TS404"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+ts404-core = { path = "../ts404-core" }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+serde = { version = "1", features = ["derive"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+[features]
+standalone = ["nih_plug/standalone"]
+
+[[bin]]
+name = "monosynth-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
