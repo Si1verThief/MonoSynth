@@ -17,7 +17,7 @@ The **2.71 / 3.5 / 6** switch at the top picks which FL's TS404 MonoSynth is. Ch
 
 ## Installing
 
-Download the zip for your system and copy the plugin into your plugin folder:
+Download the zip for your system from [Latest release](../../releases/latest) and copy the plugin into your plugin folder:
 
 | System | VST3 | CLAP |
 |---|---|---|
