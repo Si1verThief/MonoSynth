@@ -347,6 +347,20 @@ impl Channel3 {
         });
     }
 
+    /// FL's key up (keyboard and MIDI input): the voices of a key's note and its echoes
+    /// (ids `lo..=hi`) are released now, and its events still waiting are dropped. Keys go
+    /// down as events with end `HELD`, release id = id, queued at the current tick.
+    pub fn key_up(&mut self, lo: i32, hi: i32) {
+        let ours = |x: i32| lo <= x && x <= hi;
+        for i in (0..self.n_voices).rev() {
+            // ends from 0x7ffffffe up belong to FL's plugin hosting; a key's notes never have them
+            if ours(self.voices[i].id) && self.voices[i].end < 0x7fff_fffe {
+                self.release(i);
+            }
+        }
+        self.events.retain(|ev| !ours(ev.id));
+    }
+
     /// Forget all notes (the synth keeps its state).
     pub fn clear_notes(&mut self) {
         self.events.clear();

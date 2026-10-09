@@ -15,6 +15,8 @@ use crate::x87::{e, ei, Ext};
 
 /// Note end meaning "until it is released".
 pub const HELD: i32 = 0x7fff_fffd;
+/// The end of a key played live, until it is let go.
+pub const KEY_HELD: i32 = 0x7fff_fffc;
 const NEVER: i32 = 0x7fff_ffff;
 const NO_PITCH: u32 = 0x7fff_ffff;
 const NO_SLIDE: u32 = 0x7fff_ffff;
@@ -338,6 +340,12 @@ impl Channel6 {
             self.note_on(&ev);
             return;
         }
+        self.insert(ev);
+    }
+
+    /// FL's event insert: the event waits in the list even when it is due (it plays at the
+    /// next block). Keys played live go in this way.
+    pub fn insert(&mut self, ev: Event6) {
         let mut i = self.events.len();
         while i > 0 && self.events[i - 1].time < ev.time {
             i -= 1;
@@ -362,6 +370,25 @@ impl Channel6 {
             }
             true
         });
+    }
+
+    /// FL's key up (keyboard and MIDI input): the voices of a key's note and its echoes
+    /// (ids `lo..=hi`) are released now, and its events still waiting end where they start.
+    /// Keys go down as events with end `KEY_HELD`, release id = id, inserted at the current tick.
+    pub fn key_up(&mut self, lo: i32, hi: i32) {
+        let ours = |x: i32| lo <= x && x <= hi;
+        for i in (0..self.count).rev() {
+            let o = self.voice_at(i);
+            // ends from 0x7ffffffe up belong to FL's plugin hosting; a key's notes never have them
+            if ours(self.objs[o].id) && self.objs[o].end < 0x7fff_fffe {
+                self.release(o);
+            }
+        }
+        for ev in self.events.iter_mut().rev() {
+            if ours(ev.id) {
+                ev.end = ev.time;
+            }
+        }
     }
 
     /// Forget all notes (the synth keeps its state).

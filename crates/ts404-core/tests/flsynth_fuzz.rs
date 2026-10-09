@@ -1,5 +1,6 @@
 //! The FL 3.5 / FL 6 synth under hostile MIDI, odd block sizes, tempo and settings
-//! changes: no panics, finite output, and silence once every note is off.
+//! changes (piano-roll and live-key notes, switching between them): no panics, finite
+//! output, and silence once every note is off.
 use std::sync::Arc;
 use ts404_core::flchan::ChannelKnobs;
 use ts404_core::flsynth::{FlSettings, FlSynth};
@@ -47,6 +48,7 @@ fn flsynth_survives_and_goes_quiet() {
         let mut s = FlSynth::new(t.clone(), rate, 1024, v);
         let mut k = ChannelKnobs::new(v);
         let mut tempo = 120.0;
+        let mut live = false;
         let (mut l, mut rr) = (vec![0f32; 1024], vec![0f32; 1024]);
         // play: ~20 s of random notes, blocks, tempo and settings
         let mut played = 0usize;
@@ -58,7 +60,10 @@ fn flsynth_survives_and_goes_quiet() {
             if r.next() % 50 == 0 {
                 tempo = r.range(40, 300) as f64;
             }
-            s.set_settings(&FlSettings { version: v, knobs: k.clone(), tempo, song_pos: None, hq: r.next() % 2 == 0, aa: false });
+            if r.next() % 40 == 0 {
+                live = !live;
+            }
+            s.set_settings(&FlSettings { version: v, knobs: k.clone(), tempo, song_pos: None, hq: r.next() % 2 == 0, aa: false, live_keys: live });
             for _ in 0..r.range(0, 3) {
                 let off = r.range(0, n as i32 - 1) as u32;
                 let note = r.range(0, 127) as u8;
@@ -73,7 +78,7 @@ fn flsynth_survives_and_goes_quiet() {
         }
         // everything off, echo off: the synth releases and goes quiet
         k.echo_feed = 0;
-        s.set_settings(&FlSettings { version: v, knobs: k.clone(), tempo, song_pos: None, hq: false, aa: false });
+        s.set_settings(&FlSettings { version: v, knobs: k.clone(), tempo, song_pos: None, hq: false, aa: false, live_keys: live });
         s.all_notes_off(0);
         let mut tail = 0f32;
         for b in 0..(rate as usize * 30 / 512) {

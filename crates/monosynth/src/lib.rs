@@ -126,6 +126,7 @@ impl MonoSynth {
             song_pos: if transport.playing { transport.pos_beats() } else { None },
             hq: p.hq.value(),
             aa: p.alias_free.value(),
+            live_keys: p.live_keys.value(),
         }
     }
 }

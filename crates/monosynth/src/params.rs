@@ -242,6 +242,9 @@ pub struct SynthParams {
     pub adj_cut: IntParam,
     #[id = "adjres"]
     pub adj_res: IntParam,
+    /// MIDI notes act like keys played into FL (off: like piano-roll notes).
+    #[id = "livekeys"]
+    pub live_keys: BoolParam,
     #[id = "mono"]
     pub mono: BoolParam,
     #[id = "porta"]
@@ -469,6 +472,7 @@ impl Default for SynthParams {
             adj_vol: int("Volume Adjust", 128, 0, 128),
             adj_cut: int("Cutoff Adjust", 0, -256, 256),
             adj_res: int("Resonance Adjust", 0, -256, 256),
+            live_keys: BoolParam::new("Live Keys", false),
             mono: BoolParam::new("Mono", true),
             porta: BoolParam::new("Portamento", false),
             porta_time: int("Slide Time", 500, 0, 1446).with_value_to_string(Arc::new(time_text)).with_string_to_value(Arc::new(parse_time)),

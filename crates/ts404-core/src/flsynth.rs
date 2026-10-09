@@ -2,17 +2,21 @@
 //! grid (24 ticks per step at the host tempo), FL's channel engine renders at 44.1 kHz in
 //! blocks that start at ticks, and the result is resampled to the host rate.
 //!
-//! A MIDI note starts at the nearest tick that has not started yet. Its end is not known
-//! until the note-off, so it starts open-ended and gets its end then: one tick before
-//! the note-off's tick, the way FL's piano roll ends a note (the channel engines make a
-//! note ended this way play exactly like one queued with that end).
+//! MIDI notes play either like notes in FL's piano roll or like keys played into FL:
+//! - Piano roll: a note starts at the nearest tick that has not started yet. Its end is
+//!   not known until the note-off, so it starts open-ended and gets its end then: one tick
+//!   before the note-off's tick, the way FL's piano roll ends a note (the channel engines
+//!   make a note ended this way play exactly like one queued with that end).
+//! - Live keys: FL's keyboard / MIDI input. A key goes down at the current tick, at the
+//!   exact sample, and letting it go releases its note and echoes there and then
+//!   (echoes still to come are dropped).
 
 use std::sync::Arc;
 
-use crate::channel3::{velocity_level, Channel3, Event};
-use crate::channel6::{Channel6, Event6};
+use crate::channel3::{velocity_level, Channel3, Event, HELD};
+use crate::channel6::{Channel6, Event6, KEY_HELD};
 use crate::engine3::Engine3;
-use crate::flchan::{ChannelKnobs, TICKS_PER_STEP};
+use crate::flchan::{vol_curve, ChannelKnobs, TICKS_PER_STEP};
 use crate::resample::{ENGINE_RATE, HALF, Resampler};
 use crate::tables::{Tables, WAVE_LEN, Wave};
 use crate::tables3::{Fl3, Tables3};
@@ -40,7 +44,25 @@ pub struct FlSettings {
     pub hq: bool,
     /// FL's "alias-free TS404" (its WAV export option).
     pub aa: bool,
+    /// MIDI notes act like keys played into FL instead of piano-roll notes.
+    pub live_keys: bool,
 }
+
+/// FL 6's note volume for a velocity: FL's volume curve of velocity/100, in its piano
+/// roll and for keys played live alike (FL 3.5's is velocity/100).
+pub fn volume6(vel: i32) -> f32 {
+    vol_curve(Fl3::V6, ei(vel).mul(e(f32::from_bits(0x3c23_d70a))).to_f32())
+}
+
+/// A key change waiting for its sample (live keys).
+#[derive(Clone, Copy)]
+enum KeyAction {
+    Down(u8, i32),
+    Up(u8),
+}
+
+/// The most key changes one block can hold (more are dropped).
+const MAX_ACTIONS: usize = 512;
 
 pub struct FlSynth {
     tables: Arc<Tables>,
@@ -56,9 +78,13 @@ pub struct FlSynth {
     tick_acc: f64,
     boundary: u64,
     spt: f32,
-    /// Held MIDI keys: (note id, start tick).
-    live: [Option<(i32, i32)>; 128],
+    /// Held MIDI keys: (note id, start tick, played as a live key).
+    live: [Option<(i32, i32, bool)>; 128],
     note_count: u32,
+    live_keys: bool,
+    /// Live key changes still to happen, in time order: (engine sample, change).
+    actions: [(u64, KeyAction); MAX_ACTIONS],
+    n_actions: usize,
     custom: Box<Wave>,
     has_custom: bool,
     engine_l: Vec<f32>,
@@ -88,6 +114,9 @@ impl FlSynth {
             spt: Self::samples_per_tick(120.0),
             live: [None; 128],
             note_count: 0,
+            live_keys: false,
+            actions: [(0, KeyAction::Up(0)); MAX_ACTIONS],
+            n_actions: 0,
             custom: vec![0f32; WAVE_LEN].into_boxed_slice().try_into().unwrap(),
             has_custom: false,
             engine_l: vec![0.0; engine_len],
@@ -151,6 +180,7 @@ impl FlSynth {
         self.tick_acc = 0.0;
         self.boundary = 0;
         self.live = [None; 128];
+        self.n_actions = 0;
     }
 
     fn tick(&self) -> i32 {
@@ -200,7 +230,9 @@ impl FlSynth {
             self.knobs = s.knobs.clone();
             self.chan = Self::make_chan(s.version, &s.knobs);
             self.live = [None; 128];
+            self.n_actions = 0;
         }
+        self.live_keys = s.live_keys;
         self.apply_knobs(&s.knobs, false);
         match &mut self.chan {
             Chan::V35(c) => c.aa = s.aa,
@@ -229,6 +261,11 @@ impl FlSynth {
 
     /// Note-on `offset` samples into the next `process` block; `velocity` 0..1.
     pub fn note_on(&mut self, offset: u32, note: u8, velocity: f32) {
+        let vel = (velocity.clamp(0.0, 1.0) * 127.0).round() as i32;
+        if self.live_keys {
+            self.push_action(self.event_time(offset), KeyAction::Down(note & 127, vel));
+            return;
+        }
         let key = note as usize & 127;
         if self.live[key].is_some() {
             self.note_off(offset, note);
@@ -236,7 +273,6 @@ impl FlSynth {
         let tick = self.tick_at(self.event_time(offset)).wrapping_add(self.knobs.shift_ticks());
         self.note_count = self.note_count.wrapping_add(1) % 0x00ff_ffff;
         let id = (self.note_count as i32 + 1) * 64;
-        let vel = (velocity.clamp(0.0, 1.0) * 127.0).round() as i32;
         let pitch = note as i32 * 100;
         match &mut self.chan {
             Chan::V35(c) => {
@@ -245,15 +281,20 @@ impl FlSynth {
                 c.queue(ev);
             }
             Chan::V6(c) => {
-                let vol = ei(vel).div(e(100.0)).to_f32();
-                c.queue(Event6::note(tick, OPEN, id, pitch as f32, vol, 0));
+                c.queue(Event6::note(tick, OPEN, id, pitch as f32, volume6(vel), 0));
             }
         }
-        self.live[key] = Some((id, tick));
+        self.live[key] = Some((id, tick, false));
     }
 
     pub fn note_off(&mut self, offset: u32, note: u8) {
-        let Some((id, start)) = self.live[note as usize & 127].take() else { return };
+        let key = note as usize & 127;
+        // a live key (or one about to go down) goes up at its sample
+        if matches!(self.live[key], Some((_, _, true))) || self.pending_down(note & 127) {
+            self.push_action(self.event_time(offset), KeyAction::Up(note & 127));
+            return;
+        }
+        let Some((id, start, _)) = self.live[key].take() else { return };
         let off = self.tick_at(self.event_time(offset)).wrapping_add(self.knobs.shift_ticks());
         let end = off.wrapping_sub(1).max(start);
         match &mut self.chan {
@@ -268,6 +309,67 @@ impl FlSynth {
         }
     }
 
+    /// Whether a key-down for `key` is waiting.
+    fn pending_down(&self, key: u8) -> bool {
+        self.actions[..self.n_actions].iter().any(|&(_, a)| matches!(a, KeyAction::Down(k, _) if k == key))
+    }
+
+    fn push_action(&mut self, at: u64, a: KeyAction) {
+        if self.n_actions == MAX_ACTIONS {
+            return;
+        }
+        let at = at.max(self.clock);
+        let mut i = self.n_actions;
+        while i > 0 && self.actions[i - 1].0 > at {
+            self.actions[i] = self.actions[i - 1];
+            i -= 1;
+        }
+        self.actions[i] = (at, a);
+        self.n_actions += 1;
+    }
+
+    /// The id FL gives a key played live (its note and echoes take the 32 ids from there).
+    fn key_id(note: u8) -> i32 {
+        ((-1i32 << 7) - 0x800 + note as i32) << 5
+    }
+
+    /// A key goes down or up now, the way FL's keyboard / MIDI input does it.
+    fn key_action(&mut self, a: KeyAction) {
+        match a {
+            KeyAction::Down(note, vel) => {
+                let id = Self::key_id(note);
+                let pitch = note as i32 * 100;
+                match &mut self.chan {
+                    Chan::V35(c) => {
+                        // FL 3.5 starts the note right away
+                        let mut ev = Event::note(c.tick(), HELD, id, pitch, velocity_level(vel), 0);
+                        ev.release_id = id;
+                        ev.arp = if c.s.arp_dir != 0 { 0 } else { -1 };
+                        c.queue(ev);
+                    }
+                    Chan::V6(c) => {
+                        // FL 6 lists it; it starts at the next block
+                        let mut ev = Event6::note(c.tick(), KEY_HELD, id, pitch as f32, volume6(vel), 0);
+                        ev.release_id = id;
+                        c.insert(ev);
+                    }
+                }
+                let t = self.tick();
+                self.live[note as usize] = Some((id, t, true));
+            }
+            KeyAction::Up(note) => {
+                let id = Self::key_id(note);
+                if let Some((_, _, true)) = self.live[note as usize] {
+                    self.live[note as usize] = None;
+                }
+                match &mut self.chan {
+                    Chan::V35(c) => c.key_up(id, id + 31),
+                    Chan::V6(c) => c.key_up(id, id + 31),
+                }
+            }
+        }
+    }
+
     /// Output level that puts a new channel (volume 100, centred) at unity.
     fn norm(&self) -> f32 {
         let d = ChannelKnobs::new(self.version);
@@ -279,8 +381,6 @@ impl FlSynth {
     }
 
     fn generate(&mut self, len: usize) {
-        let custom = if self.has_custom { Some(&*self.custom) } else { None };
-        let t = &self.tables;
         let mut pos = 0;
         while pos < len {
             let new_tick = self.clock >= self.boundary;
@@ -288,7 +388,23 @@ impl FlSynth {
                 self.tick_acc += self.spt as f64;
                 self.boundary = self.tick_acc.round_ties_even().max(self.clock as f64 + 1.0) as u64;
             }
-            let n = (len - pos).min((self.boundary - self.clock) as usize);
+            // live keys due by now go down / up between FL's blocks, as from its MIDI input
+            let mut done = 0;
+            while done < self.n_actions && self.actions[done].0 <= self.clock {
+                let a = self.actions[done].1;
+                self.key_action(a);
+                done += 1;
+            }
+            if done > 0 {
+                self.actions.copy_within(done..self.n_actions, 0);
+                self.n_actions -= done;
+            }
+            let mut n = (len - pos).min((self.boundary - self.clock) as usize);
+            if self.n_actions > 0 {
+                n = n.min((self.actions[0].0 - self.clock).max(1) as usize);
+            }
+            let custom = if self.has_custom { Some(&*self.custom) } else { None };
+            let t = &self.tables;
             let (l, r) = (&mut self.engine_l[pos..pos + n], &mut self.engine_r[pos..pos + n]);
             match &mut self.chan {
                 Chan::V35(c) => c.block(t, &self.t3[0], new_tick, l, r, custom),

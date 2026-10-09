@@ -400,7 +400,9 @@ fn panel(ui: &mut Ui, p: Panel, params: &SynthParams, setter: &ParamSetter) {
     knob(ui, p, 125.0, 145.0, &params.sustain_level, setter, "SL", false);
     knob(ui, p, 162.0, 145.0, &params.release, setter, "REL", false);
     if fl3 {
-        knob(ui, p, 208.0, 145.0, &params.ch_gate, setter, "GAT", false);
+        knob_in_help(ui, p.rect(207.0, 144.0, 21.0, 21.0), &params.ch_gate, setter, "GAT", false,
+                     "FL's gate: notes end after this long, however long you hold them. All the way up is Off: \
+                      notes last while held, so the next one can glide from them. A new FL channel starts at about half a step.");
     } else {
         knob(ui, p, 208.0, 145.0, &params.gate, setter, "GAT", false);
     }
@@ -991,14 +993,24 @@ fn channel_page(ui: &mut Ui, tab: Tab, b: Rect, params: &SynthParams, setter: &P
                 toggle_led(ui, t(160.0, 150.0), &params.hq, setter, "HQ distortion",
                            "FL 6's high-quality distortion (interpolated), as with HQ on in FL's mixer.");
             }
-            ui.painter().text(b.min + zv(312.0, 12.0), Align2::LEFT_TOP, format!("root {}", crate::params::note_name(params.root.value())), font(11.0), DIM);
+            toggle_led(ui, t(312.0, 86.0), &params.live_keys, setter, "Live keys",
+                       "How MIDI notes act.\n\
+                        Off: like notes in FL's piano roll. A note's echoes play out after it ends.\n\
+                        On: like keys played into FL from a keyboard. Letting go also drops the echoes still to come, \
+                        and notes start at the exact moment (time shift doesn't apply).");
+            ui.painter().text(b.min + zv(312.0, 52.0), Align2::LEFT_TOP, format!("root {}", crate::params::note_name(params.root.value())), font(11.0), DIM);
         }
         Tab::Poly => {
-            toggle_led(ui, t(8.0, 70.0), &params.mono, setter, "Mono", "One voice: a new note takes over the playing one (and glides when slide is on).");
-            toggle_led(ui, t(82.0, 80.0), &params.porta, setter, "Porta", "Glide to every new note (without it only slide notes glide).");
-            toggle_led(ui, t(166.0, 150.0), &params.gate_skip, setter, "Slides skip gate", "Notes marked as slides ignore the gate.");
+            toggle_led(ui, t(8.0, 70.0), &params.mono, setter, "Mono",
+                       "One voice: a new note takes over the playing one (and glides with Porta).\n\
+                        The TS404 sounds one note at a time either way: with Mono off each note is a voice of its own, \
+                        and the voices take turns setting its pitch.");
+            toggle_led(ui, t(82.0, 80.0), &params.porta, setter, "Porta", "Glide to every new note, over the SLIDE time.\nWithout it only FL's slide notes glide (MIDI notes never are).");
+            toggle_led(ui, t(166.0, 150.0), &params.gate_skip, setter, "Slides skip gate",
+                       "FL's slide notes ignore the gate. Slide notes come from FL's piano roll and a MIDI note is never one, \
+                        so this changes nothing here.");
             knob_in(ui, k(0), &params.porta_time, setter, "SLIDE", false);
-            knob_in(ui, k(1), &params.max_poly, setter, "MAX", false);
+            knob_in_help(ui, k(1), &params.max_poly, setter, "MAX", false, "Most voices at once (∞ = no limit). The TS404 still sounds one note at a time.");
             knob_in(ui, k(2), &params.key_lo, setter, "LOW", false);
             knob_in(ui, k(3), &params.key_hi, setter, "HIGH", false);
             ui.painter().text(b.min + zv(206.0, 50.0), Align2::LEFT_TOP, "SLIDE: glide time   MAX: voices\nLOW/HIGH: key range", font(10.5), DIM);
@@ -1006,7 +1018,12 @@ fn channel_page(ui: &mut Ui, tab: Tab, b: Rect, params: &SynthParams, setter: &P
         Tab::Echo => {
             toggle_led(ui, t(8.0, 100.0), &params.echo_pingpong, setter, "Ping-pong", "Echoes alternate between two pan positions.");
             toggle_led(ui, t(112.0, 100.0), &params.echo_bounce, setter, "Bounce", "The echo pan bounces back at the edges.");
-            knob_in(ui, k(0), &params.echo_feed, setter, "FEED", false);
+            if v6 && params.mono.value() {
+                ui.painter().text(b.min + zv(222.0, 12.0), Align2::LEFT_TOP, "FL 6: no echo while Mono is on", font(11.0), ACCENT);
+            }
+            knob_in_help(ui, k(0), &params.echo_feed, setter, "FEED", false,
+                         "How loud the echoes are (0 = no echo). FL 6 doesn't echo notes while Mono is on; \
+                          in both versions glides are off while the echo is on.");
             knob_in(ui, k(1), &params.echo_pan, setter, "PAN", true);
             knob_in(ui, k(2), &params.echo_pitch, setter, "PITCH", true);
             knob_in(ui, k(3), &params.echoes, setter, "COUNT", false);
@@ -1188,6 +1205,11 @@ fn knob<P: Param>(ui: &mut Ui, p: Panel, x: f32, y: f32, param: &P, setter: &Par
 
 /// Rotary knob: drag vertically (shift = fine), wheel steps, double-click resets.
 fn knob_in<P: Param>(ui: &mut Ui, r: Rect, p: &P, setter: &ParamSetter, label: &str, bipolar: bool) -> Response {
+    knob_in_help(ui, r, p, setter, label, bipolar, "")
+}
+
+/// A knob whose tooltip adds `help` under its value.
+fn knob_in_help<P: Param>(ui: &mut Ui, r: Rect, p: &P, setter: &ParamSetter, label: &str, bipolar: bool, help: &str) -> Response {
     let resp = ui.allocate_rect(r, Sense::click_and_drag());
     let id = resp.id;
     let norm = p.unmodulated_normalized_value();
@@ -1247,7 +1269,8 @@ fn knob_in<P: Param>(ui: &mut Ui, r: Rect, p: &P, setter: &ParamSetter, label: &
         let text = if active { p.normalized_value_to_string(norm, true) } else { label.to_string() };
         painter.text(pos2(c.x, r.bottom() + zs(7.0)), Align2::CENTER_CENTER, text, font(11.0), if active { ACCENT } else { DIM });
     }
-    resp.on_hover_text(format!("{}: {}", p.name(), p.normalized_value_to_string(norm, true)))
+    let value = format!("{}: {}", p.name(), p.normalized_value_to_string(norm, true));
+    resp.on_hover_text(if help.is_empty() { value } else { format!("{value}\n{help}") })
 }
 
 fn screen(ui: &Ui, r: Rect) {

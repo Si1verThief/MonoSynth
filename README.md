@@ -11,7 +11,7 @@ Overlapping notes glide into each other, and a resonant filter is swept by the e
 The **2.71 / 3.5 / 6** switch at the top picks which FL's TS404 MonoSynth is. Choosing a preset switches to its version.
 
 - **FL 2.71**: the original TS404. It plays one note at a time, with its own delay line.
-- **FL 3.5** and **FL 6**: the TS404 as a channel in FL. The synth is the same, but these versions add FL's channel settings: polyphony or mono with portamento, a gate, echo delay, an arpeggiator and keyboard tracking.
+- **FL 3.5** and **FL 6**: the TS404 as a channel in FL. The synth is the same, but these versions add FL's channel settings: mono and portamento, a gate, echo delay, an arpeggiator and keyboard tracking. The TS404 itself still sounds one note at a time.
   - Cutoff, resonance and the gate belong to the channel here (the CUT, RES and GAT knobs). The rest of the channel settings are under (or beside) the panel.
   - FL 6 also has smoother glides, a different filter ramp, its own volume curve and HQ distortion.
 
@@ -87,25 +87,26 @@ Changing the time clears the echoes, as on the original.
 ### FL 3.5 and FL 6: the channel
 
 Below the panel (or beside it in a wide window) is one page per part of FL's channel settings:
-- **CHANNEL:** volume, pan, pitch, root note (the key that plays the synth at its own pitch), fine tune and time shift (delays every note). Also **Alias-free** (FL's export option for cleaner oscillators) and, in FL 6, **HQ distortion**.
+- **CHANNEL:** volume, pan, pitch, root note (the key that plays the synth at its own pitch), fine tune and time shift (delays every note). Also **Alias-free** (FL's export option for cleaner oscillators), in FL 6 **HQ distortion**, and **Live keys** (see *Playing it*).
 - **POLY:**
-  - **Mono** plays one voice; a new note takes over the playing one.
+  - **Mono** plays one voice; a new note takes over the playing one. The TS404 sounds one note at a time either way: with Mono off each note is a voice of its own, and the voices take turns setting its pitch.
   - **Porta** glides to every note; without it, only notes marked as slides glide.
   - **SLIDE** sets the glide time and **MAX** the number of voices (∞ = unlimited).
   - **LOW/HIGH** set the key range.
-  - **Slides skip gate** lets slide notes ignore the gate.
+  - **Slides skip gate** lets FL's slide notes ignore the gate. Slide notes come from FL's piano roll and a MIDI note is never one, so this changes nothing in MonoSynth.
 - **ECHO:** FL's echo delay.
   - **FEED** sets the feedback and **COUNT** the number of echoes. **TIME** is in steps.
   - **PAN**, **PITCH**, **CUT** and **RES** change with each echo.
   - **Ping-pong** alternates the echoes between two pan positions, and **Bounce** turns the pan back at the edges.
+  - In FL 6 there's no echo while **Mono** is on; FL 6 works this way, and a new channel starts in Mono. In both versions glides are off while the echo is on.
 - **ARP:** the arpeggiator.
   - **Direction:** up, down, up+down (with or without repeated ends) or random.
   - **RANGE** sets the octaves, **CHORD** the chord to arpeggiate (in FL 6, *Auto* arpeggiates the notes you hold), **TIME** the step length (*Off* moves one arpeggio note per played note) and **GATE** the note length.
   - **REP** (FL 6) repeats each note, and **Slide** glides between notes.
 - **TRACK:** velocity and key move pan, cutoff and resonance, measured from the MID points.
-- **ADJUST:** FL's level adjustments, added on top of the channel's knobs (some presets use them).
+- **ADJUST:** FL's level adjustments, added on top of the channel's knobs (some presets use them): ADJUST CUT moves the cutoff just like the filter's CUT, for example.
 
-The **GAT** knob is FL's gate: it cuts notes off after a set length. All the way up is *Off*.
+The **GAT** knob is FL's gate: it cuts notes off after a set length, however long you hold them. All the way up is *Off*. A new channel starts at about half a step, as in FL, so turn it up to hold notes and glide between them.
 
 ## Playing it
 
@@ -119,7 +120,8 @@ The **GAT** knob is FL's gate: it cuts notes off after a set length. All the way
     - In FL 3.5 and FL 6 the file loads onto the channel the way that version loads it.
   - **File → Save .404** writes a preset the original can load.
 - **Shapes.** **File → Load "?" shape** loads any WAV as the **?** oscillator shape. Without a shape, **?** plays a saw. The shape is saved with your project.
-- **Chords.** FL 2.71 plays one note at a time: a chord plays its last note, gliding from the one before. In FL 3.5 and FL 6, turn **Mono** off for chords.
+- **Live keys (FL 3.5 / FL 6).** MIDI notes normally act like notes in FL's piano roll. With **Live keys** on (CHANNEL page) they act like keys played into FL from a MIDI keyboard, exactly as FL's own keyboard input does: each note starts at the exact moment, letting go also drops the echoes still to come, and time shift doesn't apply.
+- **Chords.** The TS404 plays one note at a time in every version. In FL 2.71 a chord plays its last note, gliding from the one before. In FL 3.5 and FL 6 the channel's voices take turns setting the pitch, so you hear one of the notes.
 
 ## Compared with the TS404
 
@@ -132,7 +134,7 @@ The **GAT** knob is FL's gate: it cuts notes off after a set length. All the way
 **Different, and why**
 - **No step sequencer.** MonoSynth is played from MIDI like any other plugin, so it works in any DAW. That also means there are no per-step lanes for cutoff or fine pitch; automate the knobs instead.
 - **Slide timing.** Slides start when the next note arrives unless *TS404 slide timing* is on (see above). Live input can't look ahead the way the original's step grid did.
-- **Note ends (FL 3.5 / FL 6).** FL works in ticks of 1/24 of a step. A note starts on the nearest tick, and it ends when its note-off arrives, at most one tick later than a note of the same length in FL's piano roll.
+- **Note ends (FL 3.5 / FL 6).** FL works in ticks of 1/24 of a step. A note starts on the nearest tick, and it ends when its note-off arrives, at most one tick later than a note of the same length in FL's piano roll. With **Live keys** on, notes behave exactly like keys played into FL instead.
 - **Very low and very high notes.** In FL 2.71 mode every MIDI note has its own pitch; the original stopped at the ends of its range. FL 3.5 and FL 6 fold notes outside their range back by octaves, as the originals did.
 - **Filter button labels.** The original panel had BP and HP labelled the wrong way round. The buttons are in the same places but now say what they do.
 - **Sample rate.** The engine runs at 44.1 kHz like the original and is resampled to other project rates. At 44.1 kHz the output is untouched.
