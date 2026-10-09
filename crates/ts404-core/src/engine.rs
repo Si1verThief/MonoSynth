@@ -66,6 +66,9 @@ pub mod idx {
     pub const PARAM_COUNT: usize = 35;
 }
 
+/// Lowest note of FL's TS404 key range (C1), in pitch-table units.
+pub const FL_NOTE_MIN: i32 = 12 << 5;
+
 pub const FLAG_GATE: i32 = 0x01;
 pub const FLAG_SLIDE: i32 = 0x40;
 pub const ENV_DONE: i32 = 4;
@@ -168,8 +171,11 @@ impl Engine {
         let cut_start = (p[CUT_CUR] + cut_base).max(0);
         let cut_delta = (p[CUT_NEXT] + cut_base).max(0) - cut_start;
         let note = p[NOTE_CUR];
-        let prev_slide = if p[PREV_FLAGS] & FLAG_SLIDE != 0 { 0 } else { -1 };
-        let slide_to = if p[FLAGS_CUR] & FLAG_SLIDE != 0 { p[NOTE_NEXT] } else { -1 };
+        let prev_slide = p[PREV_FLAGS] & FLAG_SLIDE != 0;
+        let slide_to = (p[FLAGS_CUR] & FLAG_SLIDE != 0).then_some(p[NOTE_NEXT]);
+        // FL clamps the LFO-modulated pitch at its table's first entry. Notes FL could
+        // play keep that; lower notes (below FL's key range) use the extended table.
+        let lfo_floor = if note >= FL_NOTE_MIN { 0 } else { i32::MIN };
         let mut fs = [0f32; 8];
         for (i, v) in fs.iter_mut().enumerate() {
             *v = f(p[FILT + i]);
@@ -200,10 +206,10 @@ impl Engine {
         let release = crate::fpu::exp(ei(p[RELEASE] - 100).mul(k::C7E_5)).to_f32();
         let lfo_inc = crate::fpu::exp(ei(p[LFO_SPEED] - 50).mul(k::C0_07)).mul(k::LFO_BASE_INC).round_i64() as u32;
 
-        if pos == 0 && prev_slide < 0 && p[FLAGS_CUR] & FLAG_GATE != 0 {
+        if pos == 0 && !prev_slide && p[FLAGS_CUR] & FLAG_GATE != 0 {
             state = 0; // retrigger
         }
-        let gate_end = if slide_to < 0 { p[GATE_SAMPLES] } else { i32::MAX };
+        let gate_end = if slide_to.is_none() { p[GATE_SAMPLES] } else { i32::MAX };
         match target {
             0 => lfo_amt = e(lfo_amt).mul(e(192.0)).to_f32(),
             1 => lfo_amt = e(lfo_amt).mul(e(reso_base)).to_f32(),
@@ -211,7 +217,7 @@ impl Engine {
             _ => {}
         }
 
-        let pitch = |i: i32| t.pitch[i.clamp(0, crate::tables::PITCH_LEN as i32 - 1) as usize];
+        let pitch = |i: i32| t.pitch_at(i);
         let mut y_prev = 0f32; // kept for an out-of-range filter type
         for (i, o) in out.iter_mut().enumerate() {
             let spos = pos + i as i32;
@@ -223,16 +229,16 @@ impl Engine {
             let (mut inc1, mut inc2);
             if target == 0 && lfo != 0.0 {
                 let d = e(lfo).mul(e(lfo_amt)).round_i64() as i32;
-                esi = (note + c1 + d).max(0);
+                esi = (note + c1 + d).max(lfo_floor);
                 inc1 = pitch(esi);
-                inc2 = pitch((note + c2 + d).max(0));
+                inc2 = pitch((note + c2 + d).max(lfo_floor));
             } else {
                 inc1 = pitch(c1 + esi);
                 inc2 = pitch(c2 + esi);
             }
-            if slide_to >= 0 && esi != slide_to {
-                inc1 = inc1.wrapping_add(muldiv(pitch(slide_to + c1).wrapping_sub(inc1), spos, sps));
-                inc2 = inc2.wrapping_add(muldiv(pitch(slide_to + c2).wrapping_sub(inc2), spos, sps));
+            if let Some(to) = slide_to.filter(|&to| esi != to) {
+                inc1 = inc1.wrapping_add(muldiv(pitch(to + c1).wrapping_sub(inc1), spos, sps));
+                inc2 = inc2.wrapping_add(muldiv(pitch(to + c2).wrapping_sub(inc2), spos, sps));
             }
             inc1 = inc1.wrapping_add((((inc1 as u32) >> 8) as i32).wrapping_mul(fine1) >> 5);
             inc2 = inc2.wrapping_add((((inc2 as u32) >> 8) as i32).wrapping_mul(fine2) >> 5);

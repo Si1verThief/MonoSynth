@@ -108,6 +108,77 @@ impl Ext {
         Ext { neg, exp, man, special: None }
     }
 
+    /// `m * 2^e` truncated (round toward zero) to 64 bits.
+    fn trunc_pack(neg: bool, e: i32, m: u128) -> Ext {
+        if m == 0 {
+            return Ext { neg, ..Ext::ZERO };
+        }
+        let lz = m.leading_zeros() as i32;
+        let m = m << lz;
+        Ext { neg, exp: e - lz + 127, man: (m >> 64) as u64, special: None }
+    }
+
+    /// FADD with the FPU's rounding control set to truncate (FL 6's interpolated
+    /// distortion runs in that mode).
+    pub fn add_t(self, o: Ext) -> Ext {
+        if self.special.is_some() || o.special.is_some() {
+            return Ext::from_f64(self.to_f64_lossy() + o.to_f64_lossy());
+        }
+        if self.is_zero() {
+            return if o.is_zero() { Ext { neg: self.neg && o.neg, ..Ext::ZERO } } else { o };
+        }
+        if o.is_zero() {
+            return self;
+        }
+        let (a, b) = if (self.exp, self.man) >= (o.exp, o.man) { (self, o) } else { (o, self) };
+        let d = (a.exp - b.exp) as u32;
+        let am = (a.man as u128) << 62;
+        let bm_full = (b.man as u128) << 62;
+        // The part of b shifted out only matters as "some": a + b truncates like a + s,
+        // a - b like a - s - 1 (the true value lies strictly between).
+        let (s, rest) = if d >= 127 { (0, true) } else { (bm_full >> d, (bm_full >> d) << d != bm_full) };
+        let e = a.exp - 63 - 62;
+        if a.neg == b.neg {
+            Ext::trunc_pack(a.neg, e, am + s)
+        } else {
+            let r = am - s - rest as u128;
+            if r == 0 {
+                return Ext::ZERO;
+            }
+            Ext::trunc_pack(a.neg, e, r)
+        }
+    }
+
+    #[inline]
+    pub fn sub_t(self, o: Ext) -> Ext {
+        self.add_t(o.neg())
+    }
+
+    /// FMUL with truncation.
+    pub fn mul_t(self, o: Ext) -> Ext {
+        if self.special.is_some() || o.special.is_some() {
+            return Ext::from_f64(self.to_f64_lossy() * o.to_f64_lossy());
+        }
+        let neg = self.neg != o.neg;
+        if self.is_zero() || o.is_zero() {
+            return Ext { neg, ..Ext::ZERO };
+        }
+        Ext::trunc_pack(neg, self.exp + o.exp - 126, (self.man as u128) * (o.man as u128))
+    }
+
+    /// FSTP to an f32 with truncation.
+    pub fn to_f32_t(self) -> f32 {
+        if self.special.is_some() || self.man == 0 || self.exp < -126 {
+            // Denormal results never occur on this path; let the nearest-rounding store handle them.
+            return self.to_f32();
+        }
+        if self.exp > 127 {
+            return if self.neg { f32::MIN } else { f32::MAX };
+        }
+        let sign = if self.neg { 0x8000_0000u32 } else { 0 };
+        f32::from_bits(sign | (((self.exp + 127) as u32) << 23) | ((self.man >> 40) as u32 & 0x7f_ffff))
+    }
+
     #[inline]
     pub fn neg(self) -> Ext {
         if let Some(s) = self.special {

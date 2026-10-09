@@ -6,6 +6,10 @@ use crate::x87::{Ext, e, ei};
 
 pub const WAVE_LEN: usize = 16384;
 pub const PITCH_LEN: usize = 0xF00;
+/// Extension of the pitch table below index 0 and above `PITCH_LEN` (4 and 2 octaves),
+/// same formula. FL's own range stays untouched; this only serves notes FL couldn't play.
+pub const PITCH_EXT_LO: usize = 4 * 384;
+pub const PITCH_EXT_HI: usize = 2 * 384;
 pub const DIST_LEN: usize = 8192;
 
 pub type Wave = [f32; WAVE_LEN];
@@ -36,6 +40,10 @@ pub struct Tables {
     pub cut_cos: [f32; 256],
     /// Phase increments: C0 * 2^(i/384), 32 steps per semitone.
     pub pitch: Box<[i32; PITCH_LEN]>,
+    /// The same formula past both ends: `pitch_lo[k]` is index -(k+1), `pitch_hi[k]` is
+    /// index `PITCH_LEN + k`.
+    pub pitch_lo: Box<[i32; PITCH_EXT_LO]>,
+    pub pitch_hi: Box<[i32; PITCH_EXT_HI]>,
     /// Distortion curves [type][threshold-1][|x| * 8191.75].
     pub dist: Box<[[[i16; DIST_LEN]; 10]; 2]>,
 }
@@ -77,13 +85,24 @@ pub fn gen_waves() -> [Box<Wave>; 5] {
     [sine, tri, square, saw, rc]
 }
 
+fn pitch_entry(i: i32) -> i32 {
+    let r = fpu::exp(ei(i).mul(k::LN2_OVER_384)).mul(k::C0_INC).round_i64();
+    r.min(0x7fff_ffff) as i32
+}
+
 pub fn gen_pitch() -> Box<[i32; PITCH_LEN]> {
     let mut t: Box<[i32; PITCH_LEN]> = vec![0i32; PITCH_LEN].into_boxed_slice().try_into().unwrap();
     for (i, v) in t.iter_mut().enumerate() {
-        let r = fpu::exp(ei(i as i32).mul(k::LN2_OVER_384)).mul(k::C0_INC).round_i64() as i32;
-        *v = r.min(0x7fff_ffff);
+        *v = pitch_entry(i as i32);
     }
     t
+}
+
+/// The pitch table's extension below and above FL's range.
+pub fn gen_pitch_ext() -> (Box<[i32; PITCH_EXT_LO]>, Box<[i32; PITCH_EXT_HI]>) {
+    let lo: Vec<i32> = (0..PITCH_EXT_LO as i32).map(|k| pitch_entry(-(k + 1))).collect();
+    let hi: Vec<i32> = (0..PITCH_EXT_HI as i32).map(|k| pitch_entry(PITCH_LEN as i32 + k)).collect();
+    (lo.into_boxed_slice().try_into().unwrap(), hi.into_boxed_slice().try_into().unwrap())
 }
 
 pub fn gen_cutoff() -> ([f32; 256], [f32; 256]) {
@@ -158,15 +177,31 @@ pub fn gen_dist() -> Box<[[[i16; DIST_LEN]; 10]; 2]> {
 }
 
 impl Tables {
+    /// Phase increment for pitch-table index `i` (32 per semitone from C0), including
+    /// the extension past both ends of FL's table.
+    #[inline]
+    pub fn pitch_at(&self, i: i32) -> i32 {
+        if i < 0 {
+            self.pitch_lo[((-1 - i) as usize).min(PITCH_EXT_LO - 1)]
+        } else if i >= PITCH_LEN as i32 {
+            self.pitch_hi[((i - PITCH_LEN as i32) as usize).min(PITCH_EXT_HI - 1)]
+        } else {
+            self.pitch[i as usize]
+        }
+    }
+
     pub fn generate() -> Tables {
         let [sine, tri, square, saw, rc] = gen_waves();
         let (cut_sin, cut_cos) = gen_cutoff();
+        let (pitch_lo, pitch_hi) = gen_pitch_ext();
         Tables {
             osc: [saw.clone(), rc, sine.clone(), square.clone()],
             lfo: [sine, square, tri, saw],
             cut_sin,
             cut_cos,
             pitch: gen_pitch(),
+            pitch_lo,
+            pitch_hi,
             dist: gen_dist(),
         }
     }

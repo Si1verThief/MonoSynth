@@ -10,13 +10,14 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 ts404-core = { path = "../ts404-core" }
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
-nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+nice-plug = { version = "0.4.2", features = ["assert_process_allocs"] }
+nice-plug-egui = "0.5.1"
+egui = { version = "0.36.1", features = ["default_fonts"] }
 serde = { version = "1", features = ["derive"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 [features]
-standalone = ["nih_plug/standalone"]
+standalone = ["nice-plug/standalone"]
 
 [[bin]]
 name = "monosynth-standalone"

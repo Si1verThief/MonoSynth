@@ -19,9 +19,6 @@ use crate::steps::Step;
 use crate::tables::{Tables, Wave};
 
 const MAX_HELD: usize = 32;
-/// Pitch-table semitone range (C1..F8 as MIDI 24..113).
-const NOTE_MIN: i32 = 12;
-const NOTE_MAX: i32 = 101;
 /// Length of a hold step (~95 s, then it simply continues with another one).
 const HOLD_LEN: i32 = 1 << 22;
 
@@ -43,6 +40,8 @@ pub struct MonoVoice {
     pos: i32,
     len: i32,
     seg: Seg,
+    /// The current segment began with an envelope trigger.
+    trig: bool,
     step_len: i32,
     /// Step gate, 0..=256 of a step.
     gate: i32,
@@ -61,6 +60,7 @@ impl Default for MonoVoice {
             pos: 0,
             len: 0,
             seg: Seg::Hold,
+            trig: false,
             step_len: 4410,
             gate: 256,
             hq: false,
@@ -70,8 +70,10 @@ impl Default for MonoVoice {
     }
 }
 
+/// Semitones above C0 (MIDI 12). FL's key range is C1..F8 (MIDI 24..113); notes past it
+/// use the extended pitch table.
 fn semitone(midi: u8) -> i32 {
-    (midi as i32 - 12).clamp(NOTE_MIN, NOTE_MAX)
+    midi as i32 - 12
 }
 
 impl MonoVoice {
@@ -104,6 +106,7 @@ impl MonoVoice {
     fn begin(&mut self, seg: Seg, cur: Step, next: Step, len: i32) {
         self.engine.begin_step(&cur, &next);
         self.seg = seg;
+        self.trig = cur.gate;
         self.pos = 0;
         self.len = len;
     }
@@ -115,12 +118,19 @@ impl MonoVoice {
 
     fn glide_to(&mut self, target: i32) {
         // A glide starting on the very sample a note was triggered keeps the trigger,
-        // like a gated slide step.
-        let retrigger = self.seg == Seg::Note && self.pos == 0;
+        // like a gated slide step. That holds through any number of glides on that
+        // sample (a chord), not just the first.
+        let retrigger = self.trig && self.pos == 0;
+        let prev_flags = self.engine.p[idx::PREV_FLAGS];
         let from = Step { note: self.note, cut: 0, gate: retrigger, slide: true };
         let to = Step { note: target, cut: 0, gate: false, slide: true };
         self.note = target;
         self.begin(Seg::Glide, from, to, self.step_len);
+        if retrigger {
+            // The segment being replaced never played, so the step before it is still
+            // the previous step (otherwise it would count as a slide and block the trigger).
+            self.engine.p[idx::PREV_FLAGS] = prev_flags;
+        }
     }
 
     fn push(&mut self, midi: u8) {
@@ -254,5 +264,57 @@ mod tests {
         }
         assert!(v.is_silent());
         assert!(buf.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn every_midi_note_has_its_own_pitch() {
+        let t = Tables::generate();
+        let inc = |midi: u8, coarse: i32| t.pitch_at((semitone(midi) << 5) + (coarse << 5));
+        for coarse in [-12, 0, 12] {
+            for midi in 1..=127u8 {
+                let (a, b) = (inc(midi - 1, coarse), inc(midi, coarse));
+                assert!(b > a || b == 0x7fff_ffff, "MIDI {midi} (coarse {coarse}) is not above MIDI {}", midi - 1);
+            }
+        }
+        // Rendered: low notes keep getting lower (zero crossings of a sine over 2 s).
+        let crossings = |midi: u8| {
+            let mut v = MonoVoice::default();
+            let mut params = [0i32; idx::PARAM_COUNT];
+            params[idx::OSC1_SHAPE - 1] = 2;
+            params[idx::OSC2_SHAPE - 1] = 2;
+            params[idx::FILTER_TYPE - 1] = 4;
+            params[idx::SUSTAIN_LEVEL - 1] = 100;
+            params[idx::SUSTAIN_TIME - 1] = 100;
+            v.engine.set_params(&params);
+            v.note_on(midi);
+            let mut buf = vec![0f32; 88200];
+            v.render(&t, &mut buf, None);
+            buf.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+        };
+        let counts: Vec<usize> = [0u8, 6, 12, 18, 24, 30].iter().map(|&m| crossings(m)).collect();
+        assert!(counts.windows(2).all(|w| w[1] > w[0]), "{counts:?}");
+    }
+
+    #[test]
+    fn chords_sound() {
+        let t = Tables::generate();
+        for size in 1..=6u8 {
+            let mut v = MonoVoice::default();
+            let mut params = [0i32; idx::PARAM_COUNT];
+            params[idx::OSC_MIX - 1] = 128;
+            params[idx::CUTOFF - 1] = 100;
+            params[idx::RESO_INV - 1] = 64;
+            params[idx::SUSTAIN_LEVEL - 1] = 60;
+            params[idx::SUSTAIN_TIME - 1] = 100;
+            v.engine.set_params(&params);
+            v.set_step_len(5000);
+            for k in 0..size {
+                v.note_on(48 + 4 * k);
+            }
+            let mut buf = vec![0f32; 12000];
+            v.render(&t, &mut buf, None);
+            assert!(buf.iter().any(|x| x.abs() > 0.05), "{size}-note chord is silent");
+            assert_eq!(v.note, semitone(48 + 4 * (size - 1)), "plays the last note");
+        }
     }
 }

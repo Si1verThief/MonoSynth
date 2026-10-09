@@ -2,9 +2,11 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use nih_plug::prelude::*;
-use nih_plug_egui::EguiState;
+use nice_plug::prelude::*;
+use ts404_core::channel3::CHORDS;
+use ts404_core::flchan::{self, ChannelKnobs};
 use ts404_core::idx;
+use ts404_core::tables3::Fl3;
 
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OscShape {
@@ -15,6 +17,13 @@ pub enum OscShape {
     Square,
     /// "?": the loaded sample as a wavetable (the saw when none is loaded).
     Sample,
+}
+
+/// The editor window's size in logical pixels, saved with the plugin state (same layout
+/// as earlier versions saved it, so their sizes carry over).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct WindowState {
+    pub size: (u32, u32),
 }
 
 /// A loaded "?" shape, saved with the plugin state.
@@ -63,6 +72,40 @@ pub enum DistType {
     Hard,
 }
 
+/// Which FL version's TS404 to be.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum FlVersion {
+    #[name = "FL 2.71"]
+    Fl271,
+    #[name = "FL 3.5"]
+    Fl35,
+    #[name = "FL 6"]
+    Fl6,
+}
+
+impl FlVersion {
+    /// The FL 3.5 / FL 6 engine version (None for FL 2.71).
+    pub fn fl3(self) -> Option<Fl3> {
+        match self {
+            FlVersion::Fl271 => None,
+            FlVersion::Fl35 => Some(Fl3::V35),
+            FlVersion::Fl6 => Some(Fl3::V6),
+        }
+    }
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ArpDir {
+    Off,
+    Up,
+    Down,
+    #[name = "Up+Down"]
+    UpDown,
+    #[name = "Up+Down (repeat ends)"]
+    UpDownRepeat,
+    Random,
+}
+
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum StepLen {
     #[name = "1/32"]
@@ -80,7 +123,10 @@ pub enum StepLen {
 #[derive(Params)]
 pub struct SynthParams {
     #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
+    pub window: Arc<RwLock<WindowState>>,
+    /// The preset last chosen in the editor ("source/group/name", or "file:" and its name).
+    #[persist = "preset"]
+    pub preset: Arc<RwLock<String>>,
     #[persist = "shape"]
     pub shape: Arc<RwLock<Option<ShapeData>>>,
 
@@ -170,6 +216,176 @@ pub struct SynthParams {
     pub fl_slides: BoolParam,
     #[id = "gain"]
     pub gain: FloatParam,
+
+    // ---- version, and the FL 3.5 / FL 6 channel (FL's channel settings knobs)
+    #[id = "version"]
+    pub version: EnumParam<FlVersion>,
+    #[id = "chvol"]
+    pub ch_vol: IntParam,
+    #[id = "chpan"]
+    pub ch_pan: IntParam,
+    #[id = "chpitch"]
+    pub ch_pitch: IntParam,
+    #[id = "root"]
+    pub root: IntParam,
+    #[id = "chfine"]
+    pub ch_fine: IntParam,
+    #[id = "chcut"]
+    pub ch_cut: IntParam,
+    #[id = "chres"]
+    pub ch_res: IntParam,
+    #[id = "adjpan"]
+    pub adj_pan: IntParam,
+    #[id = "adjvol"]
+    pub adj_vol: IntParam,
+    #[id = "adjcut"]
+    pub adj_cut: IntParam,
+    #[id = "adjres"]
+    pub adj_res: IntParam,
+    #[id = "mono"]
+    pub mono: BoolParam,
+    #[id = "porta"]
+    pub porta: BoolParam,
+    #[id = "portatime"]
+    pub porta_time: IntParam,
+    #[id = "maxpoly"]
+    pub max_poly: IntParam,
+    #[id = "chgate"]
+    pub ch_gate: IntParam,
+    #[id = "gateskip"]
+    pub gate_skip: BoolParam,
+    #[id = "keylo"]
+    pub key_lo: IntParam,
+    #[id = "keyhi"]
+    pub key_hi: IntParam,
+    #[id = "shift"]
+    pub shift: IntParam,
+    #[id = "efeed"]
+    pub echo_feed: IntParam,
+    #[id = "epan"]
+    pub echo_pan: IntParam,
+    #[id = "epitch"]
+    pub echo_pitch: IntParam,
+    #[id = "ecount"]
+    pub echoes: IntParam,
+    #[id = "etime"]
+    pub echo_time: IntParam,
+    #[id = "ecut"]
+    pub echo_cut: IntParam,
+    #[id = "eres"]
+    pub echo_res: IntParam,
+    #[id = "epp"]
+    pub echo_pingpong: BoolParam,
+    #[id = "ebounce"]
+    pub echo_bounce: BoolParam,
+    #[id = "arpdir"]
+    pub arp_dir: EnumParam<ArpDir>,
+    #[id = "arprange"]
+    pub arp_range: IntParam,
+    #[id = "arpchord"]
+    pub arp_chord: IntParam,
+    #[id = "arprep"]
+    pub arp_repeat: IntParam,
+    #[id = "arptime"]
+    pub arp_time: IntParam,
+    #[id = "arpgate"]
+    pub arp_gate: IntParam,
+    #[id = "arpslide"]
+    pub arp_slide: BoolParam,
+    #[id = "velmid"]
+    pub vel_mid: IntParam,
+    #[id = "velpan"]
+    pub vel_pan: IntParam,
+    #[id = "velcut"]
+    pub vel_cut: IntParam,
+    #[id = "velres"]
+    pub vel_res: IntParam,
+    #[id = "keymid"]
+    pub key_mid: IntParam,
+    #[id = "keypan"]
+    pub key_pan: IntParam,
+    #[id = "keycut"]
+    pub key_cut: IntParam,
+    #[id = "keyres"]
+    pub key_res: IntParam,
+    #[id = "aa"]
+    pub alias_free: BoolParam,
+}
+
+/// FL's note names (C5 = 60).
+pub fn note_name(n: i32) -> String {
+    const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    format!("{}{}", N[n.rem_euclid(12) as usize], n.div_euclid(12))
+}
+
+/// Parse a note name ("C#5", "a3") or a note number.
+pub fn parse_note(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<i32>() {
+        return Some(n);
+    }
+    let mut c = s.chars();
+    let base = match c.next()?.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    let rest = c.as_str();
+    let (sharp, oct) = if let Some(r) = rest.strip_prefix('#') { (1, r) } else { (0, rest) };
+    Some(base + sharp + 12 * oct.trim().parse::<i32>().ok()?)
+}
+
+/// A time knob's length in steps, and the knob value.
+fn time_text(knob: i32) -> String {
+    let t = flchan::ticks(knob);
+    let steps = if t % 24 == 0 { format!("{} step{}", t / 24, if t == 24 { "" } else { "s" }) } else { format!("{:.2} steps", t as f32 / 24.0) };
+    format!("{steps} ({knob})")
+}
+
+/// Parse a time: "… (knob)", "off", a length in steps ("0.5 steps") or a knob value.
+fn parse_time(s: &str) -> Option<i32> {
+    let s = s.trim().to_ascii_lowercase();
+    if s.starts_with("off") {
+        return Some(flchan::KNOB_OFF);
+    }
+    if let (Some(a), Some(b)) = (s.rfind('('), s.rfind(')')) {
+        return s.get(a + 1..b)?.trim().parse().ok();
+    }
+    if let Some(n) = s.strip_suffix("steps").or_else(|| s.strip_suffix("step")) {
+        let steps: f32 = n.trim().parse().ok()?;
+        return Some(flchan::knob_for_units48((steps * 48.0).round() as i32));
+    }
+    s.parse().ok()
+}
+
+fn chord_name(c: i32) -> String {
+    match c {
+        ..=-1 => "Auto (held notes)".into(),
+        0 => "None".into(),
+        c => CHORDS.get(c as usize - 1).map(|c| c.0.to_string()).unwrap_or_else(|| "?".into()),
+    }
+}
+
+fn parse_chord(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if s.to_ascii_lowercase().starts_with("auto") {
+        return Some(-1);
+    }
+    if s.eq_ignore_ascii_case("none") {
+        return Some(0);
+    }
+    if let Some(i) = CHORDS.iter().position(|c| c.0 == s) {
+        return Some(i as i32 + 1);
+    }
+    if let Some(i) = CHORDS.iter().position(|c| c.0.eq_ignore_ascii_case(s)) {
+        return Some(i as i32 + 1);
+    }
+    s.parse().ok()
 }
 
 fn int(name: &str, default: i32, min: i32, max: i32) -> IntParam {
@@ -180,7 +396,8 @@ impl Default for SynthParams {
     fn default() -> Self {
         // Defaults are the TS404's default patch.
         Self {
-            editor_state: EguiState::from_size(490, 866),
+            window: Arc::new(RwLock::new(WindowState { size: crate::editor::DEFAULT_SIZE })),
+            preset: Arc::new(RwLock::new(String::new())),
             shape: Arc::new(RwLock::new(None)),
             osc1_shape: EnumParam::new("Osc 1 Shape", OscShape::Saw),
             osc1_coarse: int("Osc 1 Coarse", 0, -12, 12).with_unit(" st"),
@@ -239,11 +456,141 @@ impl Default for SynthParams {
             .with_unit(" dB")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+
+            version: EnumParam::new("FL Version", FlVersion::Fl271),
+            ch_vol: int("Channel Volume", 100, 0, 128),
+            ch_pan: int("Channel Pan", 64, 0, 128),
+            ch_pitch: int("Channel Pitch", 0, -1200, 1200).with_unit(" ct"),
+            root: int("Root Note", 60, 0, 131).with_value_to_string(Arc::new(note_name)).with_string_to_value(Arc::new(parse_note)),
+            ch_fine: int("Fine Tune", 0, -100, 100).with_unit(" ct"),
+            ch_cut: int("Channel Cutoff", 120, 0, 256),
+            ch_res: int("Channel Resonance", 80, 0, 256),
+            adj_pan: int("Pan Adjust", 0, -64, 64),
+            adj_vol: int("Volume Adjust", 128, 0, 128),
+            adj_cut: int("Cutoff Adjust", 0, -256, 256),
+            adj_res: int("Resonance Adjust", 0, -256, 256),
+            mono: BoolParam::new("Mono", true),
+            porta: BoolParam::new("Portamento", false),
+            porta_time: int("Slide Time", 500, 0, 1446).with_value_to_string(Arc::new(time_text)).with_string_to_value(Arc::new(parse_time)),
+            max_poly: int("Max Polyphony", 0, 0, 32)
+                .with_value_to_string(Arc::new(|v| if v == 0 { "∞".into() } else { v.to_string() }))
+                .with_string_to_value(Arc::new(|s| if s.trim() == "∞" { Some(0) } else { s.trim().parse().ok() })),
+            ch_gate: int("Gate", 800, 0, flchan::KNOB_OFF)
+                .with_value_to_string(Arc::new(|v| if v >= flchan::KNOB_OFF { "Off".into() } else { time_text(v) }))
+                .with_string_to_value(Arc::new(parse_time)),
+            gate_skip: BoolParam::new("Gate Skips Slides", true),
+            key_lo: int("Key Range Low", 0, 0, 256).with_value_to_string(Arc::new(note_name)).with_string_to_value(Arc::new(parse_note)),
+            key_hi: int("Key Range High", 256, 0, 256).with_value_to_string(Arc::new(note_name)).with_string_to_value(Arc::new(parse_note)),
+            shift: int("Time Shift", 0, 0, 1446).with_value_to_string(Arc::new(time_text)).with_string_to_value(Arc::new(parse_time)),
+            echo_feed: int("Echo Feedback", 0, 0, 128),
+            echo_pan: int("Echo Pan", 64, 0, 128),
+            echo_pitch: int("Echo Pitch", 0, -1200, 1200).with_unit(" ct"),
+            echoes: int("Echoes", 4, 1, 20),
+            echo_time: int("Echo Time", 144, 1, 768)
+                .with_value_to_string(Arc::new(|v| format!("{:.2} steps", v as f32 / 48.0)))
+                .with_string_to_value(Arc::new(|s| {
+                    let s = s.trim().to_ascii_lowercase();
+                    let n = s.trim_end_matches("steps").trim_end_matches("step").trim();
+                    n.parse::<f32>().ok().map(|x| (x * 48.0).round() as i32)
+                })),
+            echo_cut: int("Echo Cutoff", 128, 0, 256),
+            echo_res: int("Echo Resonance", 128, 0, 256),
+            echo_pingpong: BoolParam::new("Echo Ping-Pong", false),
+            echo_bounce: BoolParam::new("Echo Pan Bounce", false),
+            arp_dir: EnumParam::new("Arpeggio", ArpDir::Off),
+            arp_range: int("Arp Range", 1, 0, 5).with_unit(" oct"),
+            arp_chord: int("Arp Chord", -1, -1, CHORDS.len() as i32).with_value_to_string(Arc::new(chord_name)).with_string_to_value(Arc::new(parse_chord)),
+            arp_repeat: int("Arp Repeat", 1, 1, 8),
+            arp_time: int("Arp Time", 1024, 0, flchan::KNOB_OFF)
+                .with_value_to_string(Arc::new(|v| if v >= flchan::KNOB_OFF { "Off (per note)".into() } else { time_text(v) }))
+                .with_string_to_value(Arc::new(parse_time)),
+            arp_gate: int("Arp Gate", 48, 0, 48),
+            arp_slide: BoolParam::new("Arp Slide", false),
+            vel_mid: int("Velocity Mid", 100, 0, 128),
+            vel_pan: int("Velocity > Pan", 0, -128, 128),
+            vel_cut: int("Velocity > Cutoff", 0, -128, 128),
+            vel_res: int("Velocity > Resonance", 0, -128, 128),
+            key_mid: int("Key Mid", 60, 0, 131).with_value_to_string(Arc::new(note_name)).with_string_to_value(Arc::new(parse_note)),
+            key_pan: int("Key > Pan", 0, -256, 256),
+            key_cut: int("Key > Cutoff", 0, -256, 256),
+            key_res: int("Key > Resonance", 0, -256, 256),
+            alias_free: BoolParam::new("Alias-Free", false),
         }
     }
 }
 
 impl SynthParams {
+    /// The FL 3.5 / FL 6 channel these parameters describe (the TS404's own parameters
+    /// included).
+    pub fn knobs(&self, v: Fl3) -> ChannelKnobs {
+        let mut k = ChannelKnobs::new(v);
+        let ep = self.engine_params();
+        k.ts[1..34].copy_from_slice(&ep[..33]);
+        k.pan = self.ch_pan.value();
+        k.vol = self.ch_vol.value();
+        k.pitch = self.ch_pitch.value();
+        k.root = self.root.value();
+        k.fine = self.ch_fine.value();
+        k.cut = self.ch_cut.value();
+        k.res = self.ch_res.value();
+        k.pan_adj = self.adj_pan.value();
+        k.vol_adj = self.adj_vol.value();
+        k.cut_adj = self.adj_cut.value();
+        k.res_adj = self.adj_res.value();
+        k.mono = self.mono.value();
+        k.porta = self.porta.value();
+        k.porta_time = self.porta_time.value();
+        k.max_poly = self.max_poly.value();
+        k.gate = self.ch_gate.value();
+        k.gate_skips_slides = self.gate_skip.value();
+        k.key_lo = self.key_lo.value();
+        k.key_hi = self.key_hi.value();
+        k.shift = self.shift.value();
+        k.echo_feed = self.echo_feed.value();
+        k.echo_pan = self.echo_pan.value();
+        k.echo_pitch = self.echo_pitch.value();
+        k.echoes = self.echoes.value();
+        k.echo_time = self.echo_time.value();
+        k.echo_cut = self.echo_cut.value();
+        k.echo_res = self.echo_res.value();
+        k.echo_pingpong = self.echo_pingpong.value();
+        k.echo_bounce = self.echo_bounce.value();
+        k.arp_dir = self.arp_dir.value() as i32;
+        k.arp_range = self.arp_range.value();
+        k.arp_chord = self.arp_chord.value();
+        k.arp_repeat = self.arp_repeat.value();
+        k.arp_time = self.arp_time.value();
+        k.arp_gate = self.arp_gate.value();
+        k.arp_slide = self.arp_slide.value();
+        k.vel_mid = self.vel_mid.value();
+        k.vel_amt = [self.vel_pan.value(), self.vel_cut.value(), self.vel_res.value()];
+        k.key_mid = self.key_mid.value();
+        k.key_amt = [self.key_pan.value(), self.key_cut.value(), self.key_res.value()];
+        k
+    }
+
+    /// The channel parameters (not the TS404's), paired with their value in `k`.
+    pub fn channel_ints<'a>(&'a self, k: &ChannelKnobs) -> Vec<(&'a IntParam, i32)> {
+        vec![
+            (&self.ch_pan, k.pan), (&self.ch_vol, k.vol), (&self.ch_pitch, k.pitch), (&self.root, k.root), (&self.ch_fine, k.fine),
+            (&self.ch_cut, k.cut), (&self.ch_res, k.res), (&self.adj_pan, k.pan_adj), (&self.adj_vol, k.vol_adj),
+            (&self.adj_cut, k.cut_adj), (&self.adj_res, k.res_adj), (&self.porta_time, k.porta_time), (&self.max_poly, k.max_poly),
+            (&self.ch_gate, k.gate), (&self.key_lo, k.key_lo), (&self.key_hi, k.key_hi), (&self.shift, k.shift),
+            (&self.echo_feed, k.echo_feed), (&self.echo_pan, k.echo_pan), (&self.echo_pitch, k.echo_pitch), (&self.echoes, k.echoes),
+            (&self.echo_time, k.echo_time), (&self.echo_cut, k.echo_cut), (&self.echo_res, k.echo_res), (&self.arp_range, k.arp_range),
+            (&self.arp_chord, k.arp_chord), (&self.arp_repeat, k.arp_repeat), (&self.arp_time, k.arp_time), (&self.arp_gate, k.arp_gate),
+            (&self.vel_mid, k.vel_mid), (&self.vel_pan, k.vel_amt[0]), (&self.vel_cut, k.vel_amt[1]), (&self.vel_res, k.vel_amt[2]),
+            (&self.key_mid, k.key_mid), (&self.key_pan, k.key_amt[0]), (&self.key_cut, k.key_amt[1]), (&self.key_res, k.key_amt[2]),
+        ]
+    }
+
+    pub fn channel_bools<'a>(&'a self, k: &ChannelKnobs) -> Vec<(&'a BoolParam, bool)> {
+        vec![
+            (&self.mono, k.mono), (&self.porta, k.porta), (&self.gate_skip, k.gate_skips_slides),
+            (&self.echo_pingpong, k.echo_pingpong), (&self.echo_bounce, k.echo_bounce), (&self.arp_slide, k.arp_slide),
+        ]
+    }
+
     /// Engine ints 1..=35 (the .404 layout).
     pub fn engine_params(&self) -> [i32; idx::PARAM_COUNT] {
         let mut p = [0i32; idx::PARAM_COUNT];
@@ -308,5 +655,26 @@ impl SynthParams {
             (&self.gate, idx::STEP_GATE, false),
             (&self.delay_amt, idx::DELAY_AMT, false),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every parameter's text roundtrips (hosts type values in).
+    #[test]
+    fn value_text_roundtrips() {
+        let p = SynthParams::default();
+        for (id, ptr, _) in p.param_map() {
+            for k in 0..=200 {
+                let norm = k as f32 / 200.0;
+                let text = unsafe { ptr.normalized_value_to_string(norm, false) };
+                let back = unsafe { ptr.string_to_normalized_value(&text) };
+                assert!(back.is_some(), "{id}: can't parse {text:?}");
+                let again = unsafe { ptr.normalized_value_to_string(back.unwrap(), false) };
+                assert_eq!(text, again, "{id}");
+            }
+        }
     }
 }

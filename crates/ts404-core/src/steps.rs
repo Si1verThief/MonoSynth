@@ -4,7 +4,7 @@ use crate::engine::{Engine, FLAG_GATE, FLAG_SLIDE, idx};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Step {
-    /// Semitone index into the pitch table (MIDI note - 12), 12..=101.
+    /// Semitones above C0 (MIDI note - 12). FL's key range is 12..=101.
     pub note: i32,
     /// Per-step cutoff offset, in 1/128 cutoff-table steps.
     pub cut: i32,

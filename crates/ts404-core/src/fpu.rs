@@ -49,6 +49,11 @@ pub fn sin(x: Ext) -> Ext {
     Ext::from_f64(libm::sin(x.to_f64()))
 }
 
+/// FCOS, evaluated in f64.
+pub fn cos(x: Ext) -> Ext {
+    Ext::from_f64(libm::cos(x.to_f64()))
+}
+
 /// sin and cos of an f32 argument, each rounded to f32.
 pub fn sincos_f32(x: f32) -> (f32, f32) {
     let d = x as f64;

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/ts404-core", "crates/monosynth", "xtask"]
+exclude = ["vendor"]
+
+# baseview 0.3.7 with Linux window fixes (see vendor/README.md)
+[patch.crates-io]
+baseview = { path = "vendor/baseview" }
 
 [profile.release]
 lto = "thin"

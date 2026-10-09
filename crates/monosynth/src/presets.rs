@@ -1,7 +1,80 @@
-//! .404 preset files (TS404 format: parameters 1..=35 as little-endian ints) and the
-//! built-in presets.
+//! .404 preset files (TS404 format: parameters 1..=35 as little-endian ints), the
+//! built-in presets and the factory presets of FL 2.71, FL 3.5 and FL 6.
 
+use std::sync::OnceLock;
+
+use ts404_core::flchan::{self, ChannelKnobs};
 use ts404_core::idx;
+use ts404_core::tables3::Fl3;
+
+use crate::params::FlVersion;
+
+/// A factory preset: the version it belongs to, its group and name, and the original
+/// preset data (.404 parameters or a .fst channel preset).
+pub struct Factory {
+    pub version: FlVersion,
+    pub group: String,
+    pub name: String,
+    pub fst: bool,
+    pub data: Vec<u8>,
+}
+
+/// What a preset sets: FL 2.71 parameters, or an FL 3.5 / FL 6 channel.
+pub enum Loaded {
+    Fl271(Preset404),
+    Channel(Fl3, ChannelKnobs),
+}
+
+impl Factory {
+    /// The preset as its FL version loads it onto a new channel.
+    pub fn load(&self) -> Option<Loaded> {
+        match self.version.fl3() {
+            None if self.fst => parse_flp(&self.data).and_then(|f| f.channels.into_iter().next()).map(|c| Loaded::Fl271(c.1)),
+            None => parse_404(&self.data).map(Loaded::Fl271),
+            Some(v) => {
+                let base = ChannelKnobs::new(v);
+                let k = if self.fst { flchan::load_fst(v, &base, &self.data) } else { flchan::load_404(v, &base, &self.data) };
+                k.map(|k| Loaded::Channel(v, k))
+            }
+        }
+    }
+}
+
+pub fn factory() -> &'static [Factory] {
+    static F: OnceLock<Vec<Factory>> = OnceLock::new();
+    F.get_or_init(|| parse_factory(include_bytes!("../presets/factory.bin")).unwrap_or_default())
+}
+
+fn parse_factory(b: &[u8]) -> Option<Vec<Factory>> {
+    if b.get(..4)? != b"MSP1" {
+        return None;
+    }
+    let n = u32::from_le_bytes(b.get(4..8)?.try_into().ok()?) as usize;
+    let mut p = 8;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let version = match *b.get(p)? {
+            0 => FlVersion::Fl271,
+            1 => FlVersion::Fl35,
+            _ => FlVersion::Fl6,
+        };
+        let fst = *b.get(p + 1)? == 1;
+        p += 2;
+        let mut text = || -> Option<String> {
+            let len = *b.get(p)? as usize;
+            let t = String::from_utf8_lossy(b.get(p + 1..p + 1 + len)?).into_owned();
+            p += 1 + len;
+            Some(t)
+        };
+        let group = text()?;
+        let name = text()?;
+        let len = u32::from_le_bytes(b.get(p..p + 4)?.try_into().ok()?) as usize;
+        let data = b.get(p + 4..p + 4 + len)?.to_vec();
+        p += 4 + len;
+        out.push(Factory { version, group, name, fst, data });
+    }
+    Some(out)
+}
 
 pub type Preset404 = [i32; idx::PARAM_COUNT];
 
@@ -68,6 +141,18 @@ mod tests {
     fn roundtrip() {
         for (_, p) in BUILTIN {
             assert_eq!(parse_404(&write_404(p)).unwrap(), *p);
+        }
+    }
+
+    #[test]
+    fn factory_presets_load() {
+        let f = factory();
+        assert!(f.len() > 300, "{} factory presets", f.len());
+        for p in f {
+            assert!(p.load().is_some(), "{} / {} doesn't load", p.group, p.name);
+        }
+        for v in [FlVersion::Fl271, FlVersion::Fl35, FlVersion::Fl6] {
+            assert!(f.iter().any(|p| p.version == v));
         }
     }
 }
